@@ -8,6 +8,7 @@ try:
     from dash import html, dcc, dash_table, callback, Input, Output, State, ctx
     import dash_bootstrap_components as dbc
     import pandas as pd
+    import plotly.graph_objects as go
     from datetime import datetime
     print('APP: core imports done', flush=True)
 
@@ -65,31 +66,64 @@ try:
     app = dash.Dash(__name__, external_stylesheets=[dbc.themes.FLATLY], suppress_callback_exceptions=True)
     app.title = 'MWUA Data Management'
 
-    sidebar = dbc.Nav([
-        dbc.NavLink('Overview', href='/', active='exact'),
-        dbc.NavLink('Zone Management', href='/zones', active='exact'),
-        dbc.NavLink('Business Rules', href='/rules', active='exact'),
-        dbc.NavLink('Data Quality', href='/dq', active='exact'),
-        dbc.NavLink('Audit History', href='/audit', active='exact'),
-    ], vertical=True, pills=True, className='bg-light p-3')
+    app.index_string = '''<!DOCTYPE html>
+<html><head>{%metas%}<title>{%title%}</title>{%favicon%}{%css%}
+<style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .sidebar { position: fixed; top: 0; left: 0; width: 220px; height: 100vh; background: #1a237e; padding-top: 1rem; overflow-y: auto; z-index: 100; }
+    .sidebar .nav-link { color: rgba(255,255,255,0.8); border-radius: 8px; margin: 4px 12px; padding: 10px 16px; font-size: 0.9rem; }
+    .sidebar .nav-link:hover { color: #fff; background: rgba(255,255,255,0.1); }
+    .sidebar .nav-link.active { color: #fff; background: rgba(255,255,255,0.2); font-weight: 600; }
+    .main-content { margin-left: 220px; padding: 24px 32px; min-height: 100vh; background: #f5f7fa; max-width: calc(100vw - 220px); overflow-x: hidden; }
+    .page-header { margin-bottom: 1.5rem; padding-bottom: 0.75rem; border-bottom: 2px solid #e0e0e0; }
+    .table-wrapper { max-height: 60vh; overflow-y: auto; overflow-x: auto; border: 1px solid #dee2e6; border-radius: 8px; background: #fff; max-width: calc(100vw - 290px); }
+    .dash-table-container { font-size: 0.85rem; width: 100% !important; }
+    .dash-spreadsheet-container { max-width: 100% !important; }
+    .dash-header { position: sticky !important; top: 0; z-index: 10; }
+    .card-stat { border: none; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); transition: transform 0.2s; }
+    .card-stat:hover { transform: translateY(-2px); }
+    .brand-title { color: #fff; font-weight: 700; font-size: 1.1rem; padding: 12px 20px; margin-bottom: 0.5rem; }
+    .brand-subtitle { color: rgba(255,255,255,0.6); font-size: 0.75rem; padding: 0 20px; margin-bottom: 1rem; }
+</style>
+</head><body>{%app_entry%}<footer>{%config%}{%scripts%}{%renderer%}</footer></body></html>'''
 
-    app.layout = dbc.Container([
+    sidebar = html.Div([
+        html.Div('MWUA', className='brand-title'),
+        html.Div('Data Management', className='brand-subtitle'),
+        html.Hr(style={'borderColor':'rgba(255,255,255,0.2)','margin':'0 12px 8px'}),
+        dbc.Nav([
+            dbc.NavLink([html.I(className='me-2'), 'Overview'], href='/', active='exact'),
+            dbc.NavLink([html.I(className='me-2'), 'Zone Management'], href='/zones', active='exact'),
+            dbc.NavLink([html.I(className='me-2'), 'Business Rules'], href='/rules', active='exact'),
+            dbc.NavLink([html.I(className='me-2'), 'Data Quality'], href='/dq', active='exact'),
+            dbc.NavLink([html.I(className='me-2'), 'Audit History'], href='/audit', active='exact'),
+        ], vertical=True, pills=True),
+    ], className='sidebar')
+
+    app.layout = html.Div([
         dcc.Location(id='url'),
-        dbc.Row([
-            dbc.Col([html.H4('MWUA Data Mgmt', className='text-primary mb-3'), sidebar], width=2, className='bg-light vh-100 pt-3'),
-            dbc.Col(html.Div(id='page-content'), width=10, className='pt-3'),
-        ])
-    ], fluid=True)
+        sidebar,
+        html.Div(id='page-content', className='main-content'),
+    ])
     print('APP: layout done', flush=True)
 
+    def wrap_table(table_component):
+        return html.Div(table_component, className='table-wrapper')
+
+    TABLE_STYLE = {'overflowX':'auto'}
+    CELL_STYLE = {'textAlign':'left','padding':'8px 12px','fontSize':'0.85rem','whiteSpace':'normal','maxWidth':'250px','overflow':'hidden','textOverflow':'ellipsis'}
+    HEADER_STYLE = {'backgroundColor':'#f8f9fa','fontWeight':'600','borderBottom':'2px solid #dee2e6','position':'sticky','top':'0'}
+
     def pg_overview():
-        return html.Div([html.H3('Data Quality Overview'), html.P('Pipelines: uc1_billing_customer, uc3_network_sensor'),
-            dbc.Button('Refresh', id='btn-ov', color='primary', className='mb-3'), html.Div(id='ov-out')])
+        return html.Div([
+            html.Div([html.H3('Data Quality Overview', className='mb-0')], className='page-header'),
+            dbc.Button('Refresh Metrics', id='btn-ov', color='primary', size='sm', className='mb-3'),
+            html.Div(id='ov-out'),
+        ])
 
     def pg_zones():
         return html.Div([
-            html.H3('Zone Management'),
-            html.P(f'Table: {TBL_ZONE}', className='text-muted'),
+            html.Div([html.H3('Zone Management', className='mb-0'), html.P(f'Table: {TBL_ZONE}', className='text-muted mb-0')], className='page-header'),
             dbc.ButtonGroup([dbc.Button('Refresh', id='btn-z', color='secondary'), dbc.Button('+ Add Zone', id='btn-z-add', color='primary')], className='mb-3'),
             html.Div(id='z-out'), html.Div(id='z-status'),
             dbc.Modal([dbc.ModalHeader('Add New Zone'), dbc.ModalBody([
@@ -105,8 +139,7 @@ try:
 
     def pg_rules():
         return html.Div([
-            html.H3('Business Rules & Thresholds'),
-            html.P(f'Table: {TBL_RULES}', className='text-muted'),
+            html.Div([html.H3('Business Rules & Thresholds', className='mb-0'), html.P(f'Table: {TBL_RULES}', className='text-muted mb-0')], className='page-header'),
             dbc.ButtonGroup([dbc.Button('Refresh', id='btn-r', color='secondary'), dbc.Button('+ Add Rule', id='btn-r-add', color='primary')], className='mb-3'),
             html.Div(id='r-out'), html.Div(id='r-status'),
             dbc.Modal([dbc.ModalHeader('Add Business Rule'), dbc.ModalBody([
@@ -125,7 +158,7 @@ try:
 
     def pg_dq():
         return html.Div([
-            html.H3('Data Quality & Corrections'),
+            html.Div([html.H3('Data Quality & Corrections', className='mb-0')], className='page-header'),
             dbc.Tabs([dbc.Tab(label='Sensor DQ Issues', tab_id='sensor'), dbc.Tab(label='Billing Quarantine', tab_id='billing'), dbc.Tab(label='Submitted Corrections', tab_id='corrections')], id='dq-tabs', active_tab='sensor'),
             html.Div(id='dq-out', className='mt-3'), html.Hr(),
             html.H5('Submit Data Correction'),
@@ -139,7 +172,11 @@ try:
         ])
 
     def pg_audit():
-        return html.Div([html.H3('Audit History'), dbc.Button('Refresh', id='btn-a', color='secondary', className='mb-3'), html.Div(id='a-out')])
+        return html.Div([
+            html.Div([html.H3('Audit History', className='mb-0'), html.P('All changes tracked with who/what/when/why', className='text-muted mb-0')], className='page-header'),
+            dbc.Button('Refresh', id='btn-a', color='secondary', size='sm', className='mb-3'),
+            html.Div(id='a-out'),
+        ])
 
     @callback(Output('page-content','children'), Input('url','pathname'))
     def route(p):
@@ -151,9 +188,88 @@ try:
 
     @callback(Output('ov-out','children'), Input('btn-ov','n_clicks'), prevent_initial_call=False)
     def cb_ov(_):
-        df = run_q(f'SELECT dq_status, COUNT(*) cnt FROM {TBL_SENSOR_DQ} GROUP BY dq_status')
-        if df.empty: return html.P('No data or check grants/warehouse.')
-        return dbc.Row([dbc.Col(dbc.Card(dbc.CardBody([html.H5('Sensor DQ'),html.H2(f"{df["cnt"].sum():,}")])),width=4)])
+      try:
+        sensor_df = run_q(f'SELECT dq_status, COUNT(*) as cnt FROM {TBL_SENSOR_DQ} GROUP BY dq_status')
+        sensor_total = int(sensor_df['cnt'].sum()) if not sensor_df.empty else 0
+        sensor_flagged = int(sensor_df[sensor_df['dq_status']!='OK']['cnt'].sum()) if not sensor_df.empty and 'dq_status' in sensor_df.columns else 0
+
+        billing_df = run_q(f'SELECT COUNT(*) as cnt FROM {TBL_QUARANTINE}')
+        billing_quarantine = int(billing_df.iloc[0]['cnt']) if not billing_df.empty else 0
+
+        metrics_df = run_q(f'SELECT * FROM {TBL_BILLING_DQ} ORDER BY run_date DESC LIMIT 1')
+        valid_rows = int(metrics_df.iloc[0]['valid_row_count']) if not metrics_df.empty else 0
+        source_rows = int(metrics_df.iloc[0]['source_row_count']) if not metrics_df.empty else 0
+        dq_pass_rate = f"{(valid_rows/source_rows*100):.1f}%" if source_rows > 0 else 'N/A'
+
+        corr_df = run_q(f"SELECT COUNT(*) as cnt FROM {TBL_CORRECTIONS} WHERE status='PENDING'")
+        pending_corr = int(corr_df.iloc[0]['cnt']) if not corr_df.empty else 0
+
+        zone_df = run_q(f"SELECT COUNT(*) as cnt FROM {TBL_ZONE} WHERE is_active=true")
+        active_zones = int(zone_df.iloc[0]['cnt']) if not zone_df.empty else 0
+        rule_df = run_q(f"SELECT COUNT(*) as cnt FROM {TBL_RULES} WHERE is_active=true")
+        active_rules = int(rule_df.iloc[0]['cnt']) if not rule_df.empty else 0
+
+        def stat_card(title, value, color='primary', subtitle=''):
+            body = [html.P(title, className='text-muted mb-1', style={'fontSize':'0.8rem'}), html.H3(str(value), className=f'text-{color} mb-0')]
+            if subtitle:
+                body.append(html.Small(subtitle, className='text-muted'))
+            return dbc.Card(dbc.CardBody(body), className='card-stat h-100')
+
+        if sensor_df.empty and billing_df.empty:
+            return html.P('No data available. Check grants and warehouse connection.')
+
+        trend_df = run_q(f'SELECT run_date, source_row_count, valid_row_count, quarantine_count, duplicate_count FROM {TBL_BILLING_DQ} ORDER BY run_date')
+        billing_trend_chart = html.P('No billing DQ history for trend chart.')
+        if not trend_df.empty:
+            fig_billing = go.Figure()
+            fig_billing.add_trace(go.Scatter(x=trend_df['run_date'], y=trend_df['valid_row_count'], name='Valid', mode='lines+markers', line=dict(color='#28a745', width=2)))
+            fig_billing.add_trace(go.Scatter(x=trend_df['run_date'], y=trend_df['quarantine_count'], name='Quarantined', mode='lines+markers', line=dict(color='#dc3545', width=2)))
+            fig_billing.add_trace(go.Scatter(x=trend_df['run_date'], y=trend_df['duplicate_count'], name='Duplicates', mode='lines+markers', line=dict(color='#ffc107', width=2)))
+            fig_billing.update_layout(title='Billing DQ Trend', xaxis_title='Run Date', yaxis_title='Record Count', template='plotly_white', height=300, margin=dict(l=40,r=20,t=40,b=40), legend=dict(orientation='h',y=-0.2))
+            billing_trend_chart = dcc.Graph(figure=fig_billing, config={'displayModeBar':False})
+
+        reason_df = run_q(f'SELECT dq_reason, COUNT(*) cnt FROM {TBL_SENSOR_DQ} GROUP BY dq_reason ORDER BY cnt DESC')
+        sensor_reason_chart = html.P('No sensor DQ data for chart.')
+        if not reason_df.empty:
+            fig_sensor = go.Figure(data=[go.Bar(x=reason_df['dq_reason'], y=reason_df['cnt'], marker_color='#3498db')])
+            fig_sensor.update_layout(title='Sensor DQ Issues by Reason', xaxis_title='DQ Reason', yaxis_title='Count', template='plotly_white', height=300, margin=dict(l=40,r=20,t=40,b=40))
+            sensor_reason_chart = dcc.Graph(figure=fig_sensor, config={'displayModeBar':False})
+
+        zone_dq_df = run_q(f"SELECT zone, dq_status, COUNT(*) cnt FROM {TBL_SENSOR_DQ} GROUP BY zone, dq_status ORDER BY zone")
+        sensor_zone_chart = html.P('')
+        if not zone_dq_df.empty:
+            fig_zone = go.Figure()
+            for status in zone_dq_df['dq_status'].unique():
+                subset = zone_dq_df[zone_dq_df['dq_status']==status]
+                fig_zone.add_trace(go.Bar(x=subset['zone'], y=subset['cnt'], name=status))
+            fig_zone.update_layout(title='Sensor DQ by Zone', xaxis_title='Zone', yaxis_title='Count', barmode='stack', template='plotly_white', height=300, margin=dict(l=40,r=20,t=40,b=40), legend=dict(orientation='h',y=-0.2))
+            sensor_zone_chart = dcc.Graph(figure=fig_zone, config={'displayModeBar':False})
+
+        return html.Div([
+            dbc.Row([
+                dbc.Col(stat_card('Sensor DQ Records', f'{sensor_total:,}', 'primary', f'{sensor_flagged:,} flagged'), md=3, className='mb-3'),
+                dbc.Col(stat_card('Billing Quarantined', f'{billing_quarantine:,}', 'danger'), md=3, className='mb-3'),
+                dbc.Col(stat_card('Billing DQ Pass Rate', dq_pass_rate, 'success', f'{valid_rows:,} / {source_rows:,} valid'), md=3, className='mb-3'),
+                dbc.Col(stat_card('Pending Corrections', str(pending_corr), 'warning'), md=3, className='mb-3'),
+            ]),
+            dbc.Row([
+                dbc.Col(stat_card('Active Zones', str(active_zones), 'info'), md=3, className='mb-3'),
+                dbc.Col(stat_card('Active Rules', str(active_rules), 'info'), md=3, className='mb-3'),
+            ]),
+            html.Hr(),
+            html.H5('DQ Trends', className='mt-3 mb-3'),
+            dbc.Row([
+                dbc.Col(dbc.Card(dbc.CardBody(billing_trend_chart), className='card-stat'), md=6, className='mb-3'),
+                dbc.Col(dbc.Card(dbc.CardBody(sensor_reason_chart), className='card-stat'), md=6, className='mb-3'),
+            ]),
+            dbc.Row([
+                dbc.Col(dbc.Card(dbc.CardBody(sensor_zone_chart), className='card-stat'), md=12, className='mb-3'),
+            ]),
+        ])
+      except Exception as ov_err:
+        print(f'Overview callback error: {ov_err}', flush=True)
+        import traceback; traceback.print_exc()
+        return dbc.Alert(f'Error loading overview: {ov_err}', color='danger')
 
     @callback(Output('modal-z','is_open'), Input('btn-z-add','n_clicks'), Input('btn-z-save','n_clicks'), State('modal-z','is_open'), prevent_initial_call=True)
     def toggle_z_modal(n1,n2,o): return not o
@@ -182,8 +298,9 @@ try:
             else: status = dbc.Alert('Failed to deactivate.', color='danger', duration=4000)
         df = run_q(f'SELECT * FROM {TBL_ZONE} ORDER BY zone_id LIMIT 50')
         if df.empty: return html.P('No zones yet. Click "+ Add Zone".'), status
-        tbl = dash_table.DataTable(data=df.to_dict('records'), columns=[{'name':c,'id':c} for c in df.columns], page_size=10,
-            style_data_conditional=[{'if':{'filter_query':'{is_active} eq false'},'backgroundColor':'#f8d7da'}])
+        tbl = wrap_table(dash_table.DataTable(data=df.to_dict('records'), columns=[{'name':c,'id':c} for c in df.columns], page_size=15,
+            style_table=TABLE_STYLE, style_cell=CELL_STYLE, style_header=HEADER_STYLE,
+            style_data_conditional=[{'if':{'filter_query':'{is_active} eq false'},'backgroundColor':'#f8d7da'}]))
         return tbl, status
 
     @callback(Output('modal-r','is_open'), Input('btn-r-add','n_clicks'), Input('btn-r-save','n_clicks'), State('modal-r','is_open'), prevent_initial_call=True)
@@ -216,18 +333,26 @@ try:
             else: status = dbc.Alert('Failed to update.', color='danger', duration=4000)
         df = run_q(f'SELECT * FROM {TBL_RULES} ORDER BY rule_category, rule_name LIMIT 50')
         if df.empty: return html.P('No rules yet. Click "+ Add Rule".'), status
-        return dash_table.DataTable(data=df.to_dict('records'), columns=[{'name':c,'id':c} for c in df.columns], page_size=10), status
+        return wrap_table(dash_table.DataTable(data=df.to_dict('records'), columns=[{'name':c,'id':c} for c in df.columns], page_size=15,
+            style_table=TABLE_STYLE, style_cell=CELL_STYLE, style_header=HEADER_STYLE)), status
 
     @callback(Output('dq-out','children'), Input('dq-tabs','active_tab'))
     def cb_dq(tab):
         if tab == 'corrections':
             df = run_q(f'SELECT * FROM {TBL_CORRECTIONS} ORDER BY submitted_at DESC LIMIT 50')
             if df.empty: return html.P('No corrections submitted yet.')
+        elif tab == 'sensor':
+            df = run_q(f'SELECT sensor_id, location_id, zone, reading_type, reading_value, unit, timestamp, dq_reason, dq_status FROM {TBL_SENSOR_DQ} LIMIT 50')
+            if df.empty: return html.P('No sensor DQ records.')
         else:
-            tbl_name = TBL_SENSOR_DQ if tab=='sensor' else TBL_QUARANTINE
-            df = run_q(f'SELECT * FROM {tbl_name} LIMIT 50')
-            if df.empty: return html.P('No records.')
-        return dash_table.DataTable(data=df.to_dict('records'),columns=[{'name':c,'id':c} for c in df.columns],page_size=10,filter_action='native',sort_action='native')
+            df = run_q(f'SELECT account_id, meter_id, billing_period, original_consumption_value, original_consumption_unit, amount_billed, payment_status, quality_flag, rejection_reason FROM {TBL_QUARANTINE} LIMIT 50')
+            if df.empty: return html.P('No quarantine records.')
+        cond = [{'if':{'filter_query':'{status} eq "PENDING"'},'backgroundColor':'#fff3cd'}] if tab=='corrections' else []
+        return wrap_table(dash_table.DataTable(data=df.to_dict('records'),columns=[{'name':c,'id':c} for c in df.columns],page_size=15,
+            sort_action='native',style_table=TABLE_STYLE,style_cell=CELL_STYLE,style_header=HEADER_STYLE,
+            style_data_conditional=cond,
+            tooltip_data=[{c: {'value': str(row[c]), 'type': 'markdown'} for c in df.columns} for _, row in df.iterrows()],
+            tooltip_duration=None))
 
     @callback(Output('corr-status','children'), Input('btn-corr-submit','n_clicks'),
         State('corr-source','value'), State('corr-rec-id','value'), State('corr-field','value'),
@@ -240,14 +365,15 @@ try:
         ok = run_s(f"INSERT INTO {TBL_CORRECTIONS} VALUES ('{corr_id}','{source}','{rec_id}','{field}','','{new_val}','{reason}','PENDING','app_user','{now}',NULL,NULL)")
         if ok:
             run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{corr_id}','{TBL_CORRECTIONS}','{corr_id}','CORRECTION_SUBMITTED','{field}','','{new_val}','{reason}','app_user','{now}')")
-            return dbc.Alert(f'Correction {corr_id} submitted (PENDING).', color='success', duration=5000)
-        return dbc.Alert('Failed to submit.', color='danger', duration=4000)
+            return dbc.Alert(f'Correction {corr_id} submitted (status: PENDING).', color='success', duration=5000)
+        return dbc.Alert('Failed to submit correction.', color='danger', duration=4000)
 
     @callback(Output('a-out','children'), Input('btn-a','n_clicks'), prevent_initial_call=False)
     def cb_a(_):
         df = run_q(f'SELECT * FROM {TBL_AUDIT} ORDER BY changed_at DESC LIMIT 100')
         if df.empty: return html.P('No audit records.')
-        return dash_table.DataTable(data=df.to_dict('records'),columns=[{'name':c,'id':c} for c in df.columns],page_size=15)
+        return wrap_table(dash_table.DataTable(data=df.to_dict('records'),columns=[{'name':c,'id':c} for c in df.columns],page_size=20,
+            sort_action='native', style_table=TABLE_STYLE, style_cell=CELL_STYLE, style_header=HEADER_STYLE))
 
     print('APP: callbacks done', flush=True)
 
