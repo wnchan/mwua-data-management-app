@@ -1,0 +1,11 @@
+command:
+  - python
+  - app.py
+
+env:
+  - name: CATALOG
+    description: "Unity Catalog catalog name for MWUA tables"
+    value: "mwua_capstone_team3"
+  - name: DATABRICKS_WAREHOUSE_PATH
+    description: "SQL warehouse HTTP path"
+    value: "/sql/1.0/warehouses/1c774ae413eb3427"
