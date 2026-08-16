@@ -1,6 +1,6 @@
 command:
   - python
-  - app_minimal.py
+  - app.py
 
 env:
   - name: CATALOG
