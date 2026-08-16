@@ -1,4 +1,4 @@
--- Service Principal: app-24agm8 mwua-data-mgmt
+ setting-- Service Principal: app-24agm8 mwua-data-mgmt
 -- Application ID:    ec20b8a6-556d-4bc7-ba88-81030099a394
 
 -- 1. Catalog-level access
