@@ -139,8 +139,6 @@ try:
                         dbc.Col(dbc.Input(id='z-id', placeholder='Zone ID (e.g. ZONE_A)'), width=6),
                         dbc.Col(dbc.Input(id='z-name', placeholder='Zone Name'), width=6),
                     ], className='mb-2'),
-                    dbc.Input(id='z-desc', placeholder='Description', className='mb-2'),
-                    dbc.Input(id='z-region', placeholder='Region', className='mb-2'),
                 ]),
                 dbc.ModalFooter(dbc.Button('Save Zone', id='btn-z-save', color='primary')),
             ], id='modal-z', is_open=False),
@@ -343,14 +341,14 @@ try:
     # --- Zone CRUD ---
     @callback(Output('z-out','children'), Output('z-status','children'),
         Input('btn-z','n_clicks'), Input('btn-z-save','n_clicks'), Input('btn-z-deact-confirm','n_clicks'),
-        State('z-id','value'), State('z-name','value'), State('z-desc','value'), State('z-region','value'),
+        State('z-id','value'), State('z-name','value'),
         State('z-deact-id','value'), State('z-deact-reason','value'),
         prevent_initial_call=False)
-    def cb_z(ref, save, deact, zid, zname, zdesc, zregion, deact_id, deact_reason):
+    def cb_z(ref, save, deact, zid, zname, deact_id, deact_reason):
         status = ''
         now = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')
         if ctx.triggered_id == 'btn-z-save' and zid and zname:
-            ok = run_s(f"INSERT INTO {TBL_ZONE} VALUES ('{zid}','{zname}','{zdesc or ''}','{zregion or ''}',true,'app_user','{now}','{now}')")
+            ok = run_s(f"INSERT INTO {TBL_ZONE} VALUES ('{zid}','{zname}','','',true,'app_user','{now}','{now}')")
             if ok:
                 run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{zid}','{TBL_ZONE}','{zid}','ADD','zone_name','','{zname}','New zone added','app_user','{now}')")
                 status = dbc.Alert('Zone added!', color='success', duration=4000)
