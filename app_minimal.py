@@ -359,11 +359,11 @@ try:
         elif ctx.triggered_id == 'btn-z-deact-confirm' and deact_id:
             ok = run_s(f"UPDATE {TBL_ZONE} SET is_active=false, updated_at='{now}' WHERE zone_id='{deact_id}'")
             if ok:
-                run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{deact_id}','{TBL_ZONE}','{deact_id}','DEACTIVATE','is_active','true','false','{deact_reason or 'Deactivated'}','app_user','{now}')")
+                run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{deact_id}','{TBL_ZONE}','{deact_id}','DEACTIVATE','is_active','active → inactive','{deact_reason or 'Deactivated'}','{deact_reason or 'Deactivated'}','app_user','{now}')")
                 status = dbc.Alert(f'Zone {deact_id} deactivated.', color='warning', duration=4000)
             else:
                 status = dbc.Alert('Failed to deactivate.', color='danger', duration=4000)
-        df = run_q(f'SELECT * FROM {TBL_ZONE} ORDER BY zone_id LIMIT 50')
+        df = run_q(f'SELECT zone_id, zone_name, is_active, created_by, created_at, updated_at FROM {TBL_ZONE} ORDER BY zone_id LIMIT 50')
         if df.empty:
             return html.P('No zones yet. Click "+ Add Zone" to create one.'), status
         tbl = wrap_table(dash_table.DataTable(data=df.to_dict('records'), columns=[{'name':c,'id':c} for c in df.columns], page_size=15,
@@ -460,16 +460,26 @@ try:
             return dbc.Alert('All fields are required.', color='warning', duration=4000)
         now = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')
         corr_id = f'CORR_{now}_{rec_id}'.replace(':','-')
-        ok = run_s(f"INSERT INTO {TBL_CORRECTIONS} VALUES ('{corr_id}','{source}','{rec_id}','{field}','','{new_val}','{reason}','PENDING','app_user','{now}',NULL,NULL)")
+        # Fetch the original value from the source table
+        id_col = _SRC_ID_COL.get(source, 'record_id')
+        orig_df = run_q(f"SELECT {field} FROM {source} WHERE {id_col}='{rec_id}' LIMIT 1")
+        original_val = str(orig_df.iloc[0][field]) if not orig_df.empty else ''
+        ok = run_s(f"INSERT INTO {TBL_CORRECTIONS} VALUES ('{corr_id}','{source}','{rec_id}','{field}','{original_val}','{new_val}','{reason}','PENDING','app_user','{now}',NULL,NULL)")
         if ok:
-            run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{corr_id}','{TBL_CORRECTIONS}','{corr_id}','CORRECTION_SUBMITTED','{field}','','{new_val}','{reason}','app_user','{now}')")
+            run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{corr_id}','{TBL_CORRECTIONS}','{corr_id}','CORRECTION_SUBMITTED','{field}','{original_val} → {new_val}','{reason}','{reason}','app_user','{now}')")
             return dbc.Alert(f'Correction {corr_id} submitted (status: PENDING).', color='success', duration=5000)
         return dbc.Alert('Failed to submit correction.', color='danger', duration=4000)
 
     # --- Audit ---
     @callback(Output('a-out','children'), Input('btn-a','n_clicks'), prevent_initial_call=False)
     def cb_a(_):
-        df = run_q(f'SELECT * FROM {TBL_AUDIT} ORDER BY changed_at DESC LIMIT 100')
+        df = run_q(f"""SELECT audit_id, table_name, record_id, action, field_name,
+            CASE WHEN old_value = '' AND new_value = '' THEN reason
+                 WHEN old_value = '' THEN CONCAT('Set to: ', new_value)
+                 ELSE CONCAT(old_value, ' → ', new_value)
+            END as changes_made,
+            reason, changed_by, changed_at
+            FROM {TBL_AUDIT} ORDER BY changed_at DESC LIMIT 100""")
         if df.empty: return html.P('No audit records.')
         return wrap_table(dash_table.DataTable(data=df.to_dict('records'),columns=[{'name':c,'id':c} for c in df.columns],page_size=20,
             sort_action='native', style_table=TABLE_STYLE, style_cell=CELL_STYLE, style_header=HEADER_STYLE))
