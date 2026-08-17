@@ -613,7 +613,7 @@ try:
             df = run_q(f'SELECT zone, description, contractor_id, _dq_reason, _source_file, _ingest_ts, _rejected_at FROM {TBL_UC2_REJECT_CONTRACTOR} ORDER BY _rejected_at DESC LIMIT 50')
             if df.empty: return html.P('No rejected contractor work orders.')
         else:
-            df = run_q(f'SELECT account_id, meter_id, billing_period, original_consumption_value, original_consumption_unit, amount_billed, payment_status, quality_flag, rejection_reason FROM {TBL_QUARANTINE} LIMIT 50')
+            df = run_q(f'SELECT account_id, meter_id, billing_period, original_consumption_value, original_consumption_unit, amount_billed, payment_status, dq_status, dq_reason FROM {TBL_QUARANTINE} LIMIT 50')
             if df.empty: return html.P('No quarantine records.')
         cond = [{'if':{'filter_query':'{status} eq "PENDING"'},'backgroundColor':'#fff3cd'}] if tab=='corrections' else []
         return wrap_table(dash_table.DataTable(data=df.to_dict('records'),columns=[{'name':c,'id':c} for c in df.columns],page_size=15,
@@ -1233,7 +1233,7 @@ except Exception as e:
             df = run_q(f'SELECT zone, description, contractor_id, _dq_reason, _source_file, _ingest_ts, _rejected_at FROM {TBL_UC2_REJECT_CONTRACTOR} ORDER BY _rejected_at DESC LIMIT 50')
             if df.empty: return html.P('No rejected contractor work orders.')
         else:
-            df = run_q(f'SELECT account_id, meter_id, billing_period, original_consumption_value, original_consumption_unit, amount_billed, payment_status, quality_flag, rejection_reason FROM {TBL_QUARANTINE} LIMIT 50')
+            df = run_q(f'SELECT account_id, meter_id, billing_period, original_consumption_value, original_consumption_unit, amount_billed, payment_status, dq_status, dq_reason FROM {TBL_QUARANTINE} LIMIT 50')
             if df.empty: return html.P('No quarantine records.')
         cond = [{'if':{'filter_query':'{status} eq "PENDING"'},'backgroundColor':'#fff3cd'}] if tab=='corrections' else []
         return wrap_table(dash_table.DataTable(data=df.to_dict('records'),columns=[{'name':c,'id':c} for c in df.columns],page_size=15,
