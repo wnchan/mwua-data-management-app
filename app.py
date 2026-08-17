@@ -34,6 +34,15 @@ try:
     TBL_CORRECTIONS = f'{CATALOG}.governance.data_corrections'
     TBL_AUDIT = f'{CATALOG}.governance.audit_changes'
 
+    # UC2 Finance/Contractor tables
+    TBL_UC2_REJECT_INVOICE = f'{CATALOG}.silver.corp_silver_reject_invoice'
+    TBL_UC2_REJECT_CONTRACTOR = f'{CATALOG}.silver.corp_silver_reject_contractor'
+    TBL_UC2_INVOICE_HEADER = f'{CATALOG}.silver.corp_silver_invoice_header'
+    TBL_UC2_WORKORDER = f'{CATALOG}.silver.corp_silver_contractor_workorder'
+    TBL_UC2_VENDOR = f'{CATALOG}.silver.corp_silver_dim_vendor'
+    TBL_UC2_DQ_METRICS = f'{CATALOG}.gold.corp_gold_dq_metrics'
+    TBL_UC2_DQ_REASONS = f'{CATALOG}.gold.corp_gold_dq_reject_reasons'
+
     def get_conn():
         sql, WSC = _lazy_sql()
         w = WSC()
@@ -95,6 +104,7 @@ try:
         dbc.Nav([
             dbc.NavLink([html.I(className='me-2'), 'Overview'], href='/', active='exact'),
             dbc.NavLink([html.I(className='me-2'), 'Zone Management'], href='/zones', active='exact'),
+            dbc.NavLink([html.I(className='me-2'), 'Vendor Master'], href='/vendors', active='exact'),
             dbc.NavLink([html.I(className='me-2'), 'Business Rules'], href='/rules', active='exact'),
             dbc.NavLink([html.I(className='me-2'), 'Data Quality'], href='/dq', active='exact'),
             dbc.NavLink([html.I(className='me-2'), 'Audit History'], href='/audit', active='exact'),
@@ -169,6 +179,13 @@ try:
             ]),
         ])
 
+    def pg_vendors():
+        return html.Div([
+            html.Div([html.H3('Vendor Master (UC2)', className='mb-0'), html.P(f'Source: {TBL_UC2_VENDOR} (read-only, pipeline-managed)', className='text-muted mb-0')], className='page-header'),
+            dbc.Button('Refresh', id='btn-v', color='secondary', className='mb-3'),
+            html.Div(id='v-out'),
+        ])
+
     def pg_rules():
         return html.Div([
             html.Div([html.H3('Business Rules & Thresholds', className='mb-0'), html.P(f'Table: {TBL_RULES}', className='text-muted mb-0')], className='page-header'),
@@ -190,6 +207,9 @@ try:
                         {'label':'Sensor Threshold','value':'sensor_threshold'},
                         {'label':'Billing Validation','value':'billing_validation'},
                         {'label':'DQ Check','value':'dq_check'},
+                        {'label':'UC2 ERP Validation','value':'uc2_erp_validation'},
+                        {'label':'UC2 Contractor Validation','value':'uc2_contractor_validation'},
+                        {'label':'UC2 Contractor Mapping','value':'uc2_contractor_mapping'},
                     ], placeholder='Category', className='mb-2'),
                     dbc.Row([
                         dbc.Col(dbc.Input(id='r-param', placeholder='Parameter (e.g. max_flow_rate)'), width=6),
@@ -231,6 +251,8 @@ try:
             dbc.Tabs([
                 dbc.Tab(label='Sensor DQ Issues', tab_id='sensor'),
                 dbc.Tab(label='Billing Quarantine', tab_id='billing'),
+                dbc.Tab(label='UC2 ERP Rejected', tab_id='uc2_erp'),
+                dbc.Tab(label='UC2 Contractor Rejected', tab_id='uc2_contractor'),
                 dbc.Tab(label='Submitted Corrections', tab_id='corrections'),
             ], id='dq-tabs', active_tab='sensor'),
             html.Div(id='dq-out', className='mt-3'),
@@ -242,6 +264,8 @@ try:
                     dbc.Col(dbc.Select(id='corr-source', options=[
                         {'label':'Sensor DQ','value':TBL_SENSOR_DQ},
                         {'label':'Billing Quarantine','value':TBL_QUARANTINE},
+                        {'label':'UC2 ERP Rejected','value':TBL_UC2_REJECT_INVOICE},
+                        {'label':'UC2 Contractor Rejected','value':TBL_UC2_REJECT_CONTRACTOR},
                     ], placeholder='Source Table'), width=3),
                     dbc.Col(dcc.Dropdown(id='corr-rec-id', placeholder='Select Record ID', style={'width':'100%'}), width=3),
                     dbc.Col(dcc.Dropdown(id='corr-field', placeholder='Select Field to correct', style={'width':'100%'}), width=3),
@@ -260,6 +284,7 @@ try:
     @callback(Output('page-content','children'), Input('url','pathname'))
     def route(p):
         if p=='/zones': return pg_zones()
+        if p=='/vendors': return pg_vendors()
         if p=='/rules': return pg_rules()
         if p=='/dq': return pg_dq()
         if p=='/audit': return pg_audit()
@@ -293,6 +318,25 @@ try:
         active_zones = int(zone_df.iloc[0]['cnt']) if not zone_df.empty else 0
         rule_df = run_q(f"SELECT COUNT(*) cnt FROM {TBL_RULES} WHERE is_active=true")
         active_rules = int(rule_df.iloc[0]['cnt']) if not rule_df.empty else 0
+
+        # UC2 DQ metrics
+        uc2_metrics_df = run_q(f'SELECT * FROM {TBL_UC2_DQ_METRICS}')
+        uc2_erp_pass = 'N/A'
+        uc2_con_pass = 'N/A'
+        uc2_erp_rejected = 0
+        uc2_con_rejected = 0
+        if not uc2_metrics_df.empty:
+            erp_row = uc2_metrics_df[uc2_metrics_df['domain']=='erp_invoice']
+            con_row = uc2_metrics_df[uc2_metrics_df['domain']=='contractor_workorder']
+            if not erp_row.empty:
+                uc2_erp_pass = f"{erp_row.iloc[0]['pass_rate_pct']:.1f}%"
+                uc2_erp_rejected = int(erp_row.iloc[0]['rejected_count'])
+            if not con_row.empty:
+                uc2_con_pass = f"{con_row.iloc[0]['pass_rate_pct']:.1f}%"
+                uc2_con_rejected = int(con_row.iloc[0]['rejected_count'])
+
+        # UC2 reject reasons
+        uc2_reasons_df = run_q(f'SELECT domain, _dq_reason, cnt FROM {TBL_UC2_DQ_REASONS} ORDER BY cnt DESC')
 
         def stat_card(title, value, color='primary', subtitle=''):
             body = [html.P(title, className='text-muted mb-1', style={'fontSize':'0.8rem'}), html.H3(str(value), className=f'text-{color} mb-0')]
@@ -334,6 +378,14 @@ try:
             fig_zone.update_layout(title='Sensor DQ by Zone', xaxis_title='Zone', yaxis_title='Count', barmode='stack', template='plotly_white', height=300, margin=dict(l=40,r=20,t=40,b=40), legend=dict(orientation='h',y=-0.2))
             sensor_zone_chart = dcc.Graph(figure=fig_zone, config={'displayModeBar':False})
 
+        # UC2 reject reasons chart
+        uc2_reason_chart = html.P('No UC2 rejection data.')
+        if not uc2_reasons_df.empty:
+            color_map = {'erp_invoice':'#e74c3c','contractor_workorder':'#f39c12'}
+            fig_uc2 = go.Figure(data=[go.Bar(x=uc2_reasons_df['_dq_reason'], y=uc2_reasons_df['cnt'], marker_color=[color_map.get(d,'#3498db') for d in uc2_reasons_df['domain']])])
+            fig_uc2.update_layout(title='UC2 Rejection Reasons', xaxis_title='Reason', yaxis_title='Count', template='plotly_white', height=300, margin=dict(l=40,r=20,t=40,b=40))
+            uc2_reason_chart = dcc.Graph(figure=fig_uc2, config={'displayModeBar':False})
+
         return html.Div([
             dbc.Row([
                 dbc.Col(stat_card('Sensor DQ Records', f'{sensor_total:,}', 'primary', f'{sensor_flagged:,} flagged'), md=3, className='mb-3'),
@@ -342,6 +394,8 @@ try:
                 dbc.Col(stat_card('Pending Corrections', str(pending_corr), 'warning'), md=3, className='mb-3'),
             ]),
             dbc.Row([
+                dbc.Col(stat_card('UC2 ERP Pass Rate', uc2_erp_pass, 'success', f'{uc2_erp_rejected} rejected'), md=3, className='mb-3'),
+                dbc.Col(stat_card('UC2 Contractor Pass Rate', uc2_con_pass, 'success', f'{uc2_con_rejected} rejected'), md=3, className='mb-3'),
                 dbc.Col(stat_card('Active Zones', str(active_zones), 'info'), md=3, className='mb-3'),
                 dbc.Col(stat_card('Active Rules', str(active_rules), 'info'), md=3, className='mb-3'),
             ]),
@@ -352,13 +406,28 @@ try:
                 dbc.Col(dbc.Card(dbc.CardBody(sensor_reason_chart), className='card-stat'), md=6, className='mb-3'),
             ]),
             dbc.Row([
-                dbc.Col(dbc.Card(dbc.CardBody(sensor_zone_chart), className='card-stat'), md=12, className='mb-3'),
+                dbc.Col(dbc.Card(dbc.CardBody(sensor_zone_chart), className='card-stat'), md=6, className='mb-3'),
+                dbc.Col(dbc.Card(dbc.CardBody(uc2_reason_chart), className='card-stat'), md=6, className='mb-3'),
             ]),
         ])
       except Exception as ov_err:
         print(f'Overview callback error: {ov_err}', flush=True)
         import traceback; traceback.print_exc()
         return dbc.Alert(f'Error loading overview: {ov_err}', color='danger')
+
+    # --- Vendor Master (read-only) ---
+    @callback(Output('v-out','children'), Input('btn-v','n_clicks'), prevent_initial_call=False)
+    def cb_v(_):
+        df = run_q(f'SELECT vendor_id, vendor_name FROM {TBL_UC2_VENDOR} ORDER BY vendor_id')
+        if df.empty:
+            return html.P('No vendor data available. Run the UC2 pipeline to populate.')
+        return html.Div([
+            html.P(f'{len(df)} vendors loaded from pipeline.', className='text-muted mb-2'),
+            wrap_table(dash_table.DataTable(
+                data=df.to_dict('records'), columns=[{'name':c,'id':c} for c in df.columns],
+                page_size=20, filter_action='native', sort_action='native',
+                style_table=TABLE_STYLE, style_cell=CELL_STYLE, style_header=HEADER_STYLE)),
+        ])
 
     # --- Zone modal toggles ---
     @callback(Output('modal-z','is_open'), Input('btn-z-add','n_clicks'), Input('btn-z-save','n_clicks'), State('modal-z','is_open'), prevent_initial_call=True)
@@ -521,6 +590,12 @@ try:
         elif tab == 'sensor':
             df = run_q(f'SELECT sensor_id, location_id, zone, reading_type, reading_value, unit, timestamp, dq_reason, dq_status FROM {TBL_SENSOR_DQ} LIMIT 50')
             if df.empty: return html.P('No sensor DQ records.')
+        elif tab == 'uc2_erp':
+            df = run_q(f'SELECT cost_center, vendor_id, vendor_name, site_zone, invoice_date, project_code, _dq_reason, _source_file, _ingest_ts, _rejected_at FROM {TBL_UC2_REJECT_INVOICE} ORDER BY _rejected_at DESC LIMIT 50')
+            if df.empty: return html.P('No rejected ERP invoices.')
+        elif tab == 'uc2_contractor':
+            df = run_q(f'SELECT zone, description, contractor_id, _dq_reason, _source_file, _ingest_ts, _rejected_at FROM {TBL_UC2_REJECT_CONTRACTOR} ORDER BY _rejected_at DESC LIMIT 50')
+            if df.empty: return html.P('No rejected contractor work orders.')
         else:
             df = run_q(f'SELECT account_id, meter_id, billing_period, original_consumption_value, original_consumption_unit, amount_billed, payment_status, quality_flag, rejection_reason FROM {TBL_QUARANTINE} LIMIT 50')
             if df.empty: return html.P('No quarantine records.')
@@ -532,7 +607,7 @@ try:
             tooltip_duration=None))
 
     # --- Populate Record ID & Field dropdowns based on source table ---
-    _SRC_ID_COL = {TBL_SENSOR_DQ: 'sensor_id', TBL_QUARANTINE: 'account_id'}
+    _SRC_ID_COL = {TBL_SENSOR_DQ: 'sensor_id', TBL_QUARANTINE: 'account_id', TBL_UC2_REJECT_INVOICE: 'vendor_id', TBL_UC2_REJECT_CONTRACTOR: 'contractor_id'}
 
     @callback(
         Output('corr-rec-id','options'), Output('corr-field','options'),
