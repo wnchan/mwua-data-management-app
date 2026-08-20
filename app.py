@@ -26,13 +26,22 @@ try:
     # Config
     CATALOG = os.environ.get('CATALOG', 'mwua_capstone_team3')
     SQL_PATH = os.environ.get('DATABRICKS_WAREHOUSE_PATH', '')
-    TBL_SENSOR_DQ = f'{CATALOG}.silver.ops_silver_sensor_dq'
-    TBL_QUARANTINE = f'{CATALOG}.silver.ops_quarantine_billing'
+    TBL_SENSOR_DQ = f'{CATALOG}.silver.ops_silver_quarantine_sensor'
+    TBL_QUARANTINE = f'{CATALOG}.silver.ops_silver_quarantine_billing'
     TBL_BILLING_DQ = f'{CATALOG}.silver.ops_silver_billing_dq_metrics'
-    TBL_ZONE = f'{CATALOG}.governance.zone_master'
+    TBL_ZONE = f'{CATALOG}.silver.shared_silver_dim_zone'
     TBL_RULES = f'{CATALOG}.governance.config_business_rules'
     TBL_CORRECTIONS = f'{CATALOG}.governance.data_corrections'
     TBL_AUDIT = f'{CATALOG}.governance.audit_changes'
+
+    # UC2 Finance/Contractor tables
+    TBL_UC2_REJECT_INVOICE = f'{CATALOG}.silver.corp_silver_quarantine_invoice'
+    TBL_UC2_REJECT_CONTRACTOR = f'{CATALOG}.silver.corp_silver_quarantine_contractor'
+    TBL_UC2_INVOICE_HEADER = f'{CATALOG}.silver.corp_silver_invoice_header'
+    TBL_UC2_WORKORDER = f'{CATALOG}.silver.corp_silver_contractor_workorder'
+    TBL_UC2_VENDOR = f'{CATALOG}.silver.corp_silver_dim_vendor'
+    TBL_UC2_DQ_METRICS = f'{CATALOG}.gold.corp_gold_dq_metrics'
+    TBL_UC2_DQ_REASONS = f'{CATALOG}.gold.corp_gold_dq_reject_reasons'
 
     def get_conn():
         sql, WSC = _lazy_sql()
@@ -60,6 +69,39 @@ try:
         except Exception as e:
             print(f'Stmt err: {e}', flush=True)
             return False
+
+    # --- Input sanitisation & validation ---
+    import re as _re
+
+    def _esc(val):
+        """Escape single quotes for SQL string literals. Returns empty string for None."""
+        if val is None:
+            return ''
+        return str(val).replace("'", "''")
+
+    def _valid_id(val, max_len=50):
+        """Validate an ID field: non-empty, alphanumeric + underscore/hyphen, max length."""
+        if not val or not val.strip():
+            return False, 'ID is required.'
+        v = val.strip()
+        if len(v) > max_len:
+            return False, f'ID must be {max_len} characters or fewer.'
+        if not _re.match(r'^[A-Za-z0-9_\-]+$', v):
+            return False, 'ID must contain only letters, digits, underscores, or hyphens.'
+        return True, v
+
+    def _valid_text(val, field_label='Field', required=True, max_len=255):
+        """Validate a free-text field: optionally required, max length, no control chars."""
+        if not val or not val.strip():
+            if required:
+                return False, f'{field_label} is required.'
+            return True, ''
+        v = val.strip()
+        if len(v) > max_len:
+            return False, f'{field_label} must be {max_len} characters or fewer.'
+        if _re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', v):
+            return False, f'{field_label} contains invalid characters.'
+        return True, v
 
     print('APP: SQL funcs defined', flush=True)
 
@@ -94,7 +136,8 @@ try:
         html.Hr(style={'borderColor':'rgba(255,255,255,0.2)','margin':'0 12px 8px'}),
         dbc.Nav([
             dbc.NavLink([html.I(className='me-2'), 'Overview'], href='/', active='exact'),
-            dbc.NavLink([html.I(className='me-2'), 'Zone Management'], href='/zones', active='exact'),
+            dbc.NavLink([html.I(className='me-2'), 'Zones'], href='/zones', active='exact'),
+            dbc.NavLink([html.I(className='me-2'), 'Vendors'], href='/vendors', active='exact'),
             dbc.NavLink([html.I(className='me-2'), 'Business Rules'], href='/rules', active='exact'),
             dbc.NavLink([html.I(className='me-2'), 'Data Quality'], href='/dq', active='exact'),
             dbc.NavLink([html.I(className='me-2'), 'Audit History'], href='/audit', active='exact'),
@@ -104,6 +147,7 @@ try:
     app.layout = html.Div([
         dcc.Location(id='url'),
         dcc.Store(id='refresh-trigger', data=0),
+        dcc.Store(id='rule-trigger', data=0),
         sidebar,
         html.Div(id='page-content', className='main-content'),
     ])
@@ -119,54 +163,25 @@ try:
 
     def pg_overview():
         return html.Div([
-            html.Div([html.H3('Data Quality Overview', className='mb-0')], className='page-header'),
+            html.Div([
+                html.H3('Data Quality Overview', className='mb-0'),
+                html.P('Aggregated from: ops_silver_quarantine_sensor, ops_silver_quarantine_billing, ops_silver_billing_dq_metrics, corp_gold_dq_metrics, corp_gold_dq_reject_reasons', className='text-muted mb-0', style={'fontSize':'0.75rem'}),
+            ], className='page-header'),
             dbc.Button('Refresh Metrics', id='btn-ov', color='primary', size='sm', className='mb-3'),
             html.Div(id='ov-out'),
         ])
     def pg_zones():
         return html.Div([
-            html.Div([html.H3('Zone Management', className='mb-0'), html.P(f'Table: {TBL_ZONE}', className='text-muted mb-0')], className='page-header'),
-            dbc.ButtonGroup([
-                dbc.Button('Refresh', id='btn-z', color='secondary'),
-                dbc.Button('+ Add Zone', id='btn-z-add', color='primary'),
-            ], className='mb-3'),
+            html.Div([html.H3('Zones', className='mb-0'), html.P(f'Source: {TBL_ZONE} (read-only, derived from pipeline data)', className='text-muted mb-0')], className='page-header'),
+            dbc.Button('Refresh', id='btn-z', color='secondary', className='mb-3'),
             html.Div(id='z-out'),
-            html.Div(id='z-status'),
-            # Add Zone Modal
-            dbc.Modal([
-                dbc.ModalHeader('Add New Zone'),
-                dbc.ModalBody([
-                    dbc.Row([
-                        dbc.Col(dbc.Input(id='z-id', placeholder='Zone ID (e.g. ZONE_A)'), width=6),
-                        dbc.Col(dbc.Input(id='z-name', placeholder='Zone Name'), width=6),
-                    ], className='mb-2'),
-                ]),
-                dbc.ModalFooter(dbc.Button('Save Zone', id='btn-z-save', color='primary')),
-            ], id='modal-z', is_open=False),
-            # Deactivate Zone Modal
-            dbc.Modal([
-                dbc.ModalHeader('Deactivate Zone'),
-                dbc.ModalBody([
-                    html.Label('Select Zone', className='fw-bold mb-1'),
-                    dcc.Dropdown(id='z-deact-id', placeholder='Select zone to deactivate', className='mb-2'),
-                    dbc.Input(id='z-deact-reason', placeholder='Reason for deactivation (required)', className='mb-2'),
-                ]),
-                dbc.ModalFooter(dbc.Button('Deactivate', id='btn-z-deact-confirm', color='danger')),
-            ], id='modal-z-deact', is_open=False),
-            # Edit Zone Modal
-            dbc.Modal([
-                dbc.ModalHeader('Edit Zone'),
-                dbc.ModalBody([
-                    html.Label('Select Zone', className='fw-bold mb-1'),
-                    dcc.Dropdown(id='z-edit-id', placeholder='Select zone to edit', className='mb-2'),
-                    dbc.Input(id='z-edit-name', placeholder='New Zone Name (required)', className='mb-2'),
-                ]),
-                dbc.ModalFooter(dbc.Button('Update Zone', id='btn-z-edit-confirm', color='warning')),
-            ], id='modal-z-edit', is_open=False),
-            dbc.ButtonGroup([
-                dbc.Button('Edit Zone', id='btn-z-edit', color='outline-warning', size='sm', className='mt-2'),
-                dbc.Button('Deactivate Zone', id='btn-z-deact', color='outline-danger', size='sm', className='mt-2'),
-            ]),
+        ])
+
+    def pg_vendors():
+        return html.Div([
+            html.Div([html.H3('Vendor Master', className='mb-0'), html.P(f'Source: {TBL_UC2_VENDOR} (read-only, pipeline-managed)', className='text-muted mb-0')], className='page-header'),
+            dbc.Button('Refresh', id='btn-v', color='secondary', className='mb-3'),
+            html.Div(id='v-out'),
         ])
 
     def pg_rules():
@@ -190,6 +205,9 @@ try:
                         {'label':'Sensor Threshold','value':'sensor_threshold'},
                         {'label':'Billing Validation','value':'billing_validation'},
                         {'label':'DQ Check','value':'dq_check'},
+                        {'label':'ERP Validation','value':'uc2_erp_validation'},
+                        {'label':'UC2 Contractor Validation','value':'uc2_contractor_validation'},
+                        {'label':'Contractor Mapping','value':'uc2_contractor_mapping'},
                     ], placeholder='Category', className='mb-2'),
                     dbc.Row([
                         dbc.Col(dbc.Input(id='r-param', placeholder='Parameter (e.g. max_flow_rate)'), width=6),
@@ -231,6 +249,8 @@ try:
             dbc.Tabs([
                 dbc.Tab(label='Sensor DQ Issues', tab_id='sensor'),
                 dbc.Tab(label='Billing Quarantine', tab_id='billing'),
+                dbc.Tab(label='ERP Rejected', tab_id='uc2_erp'),
+                dbc.Tab(label='Contractor Rejected', tab_id='uc2_contractor'),
                 dbc.Tab(label='Submitted Corrections', tab_id='corrections'),
             ], id='dq-tabs', active_tab='sensor'),
             html.Div(id='dq-out', className='mt-3'),
@@ -242,6 +262,8 @@ try:
                     dbc.Col(dbc.Select(id='corr-source', options=[
                         {'label':'Sensor DQ','value':TBL_SENSOR_DQ},
                         {'label':'Billing Quarantine','value':TBL_QUARANTINE},
+                        {'label':'ERP Rejected','value':TBL_UC2_REJECT_INVOICE},
+                        {'label':'Contractor Rejected','value':TBL_UC2_REJECT_CONTRACTOR},
                     ], placeholder='Source Table'), width=3),
                     dbc.Col(dcc.Dropdown(id='corr-rec-id', placeholder='Select Record ID', style={'width':'100%'}), width=3),
                     dbc.Col(dcc.Dropdown(id='corr-field', placeholder='Select Field to correct', style={'width':'100%'}), width=3),
@@ -260,6 +282,7 @@ try:
     @callback(Output('page-content','children'), Input('url','pathname'))
     def route(p):
         if p=='/zones': return pg_zones()
+        if p=='/vendors': return pg_vendors()
         if p=='/rules': return pg_rules()
         if p=='/dq': return pg_dq()
         if p=='/audit': return pg_audit()
@@ -288,11 +311,30 @@ try:
         corr_df = run_q(f"SELECT COUNT(*) cnt FROM {TBL_CORRECTIONS} WHERE status='PENDING'")
         pending_corr = int(corr_df.iloc[0]['cnt']) if not corr_df.empty else 0
 
-        # Active zones & rules
-        zone_df = run_q(f"SELECT COUNT(*) cnt FROM {TBL_ZONE} WHERE is_active=true")
+        # Zone count & rules
+        zone_df = run_q(f"SELECT COUNT(*) cnt FROM {TBL_ZONE}")
         active_zones = int(zone_df.iloc[0]['cnt']) if not zone_df.empty else 0
         rule_df = run_q(f"SELECT COUNT(*) cnt FROM {TBL_RULES} WHERE is_active=true")
         active_rules = int(rule_df.iloc[0]['cnt']) if not rule_df.empty else 0
+
+        # UC2 DQ metrics
+        uc2_metrics_df = run_q(f'SELECT * FROM {TBL_UC2_DQ_METRICS}')
+        uc2_erp_pass = 'N/A'
+        uc2_con_pass = 'N/A'
+        uc2_erp_rejected = 0
+        uc2_con_rejected = 0
+        if not uc2_metrics_df.empty:
+            erp_row = uc2_metrics_df[uc2_metrics_df['domain']=='erp_invoice']
+            con_row = uc2_metrics_df[uc2_metrics_df['domain']=='contractor_workorder']
+            if not erp_row.empty:
+                uc2_erp_pass = f"{erp_row.iloc[0]['pass_rate_pct']:.1f}%"
+                uc2_erp_rejected = int(erp_row.iloc[0]['rejected_count'])
+            if not con_row.empty:
+                uc2_con_pass = f"{con_row.iloc[0]['pass_rate_pct']:.1f}%"
+                uc2_con_rejected = int(con_row.iloc[0]['rejected_count'])
+
+        # UC2 reject reasons
+        uc2_reasons_df = run_q(f'SELECT domain, _dq_reason, cnt FROM {TBL_UC2_DQ_REASONS} ORDER BY cnt DESC')
 
         def stat_card(title, value, color='primary', subtitle=''):
             body = [html.P(title, className='text-muted mb-1', style={'fontSize':'0.8rem'}), html.H3(str(value), className=f'text-{color} mb-0')]
@@ -334,6 +376,14 @@ try:
             fig_zone.update_layout(title='Sensor DQ by Zone', xaxis_title='Zone', yaxis_title='Count', barmode='stack', template='plotly_white', height=300, margin=dict(l=40,r=20,t=40,b=40), legend=dict(orientation='h',y=-0.2))
             sensor_zone_chart = dcc.Graph(figure=fig_zone, config={'displayModeBar':False})
 
+        # UC2 reject reasons chart
+        uc2_reason_chart = html.P('No contractor or erp rejection data.')
+        if not uc2_reasons_df.empty:
+            color_map = {'erp_invoice':'#e74c3c','contractor_workorder':'#f39c12'}
+            fig_uc2 = go.Figure(data=[go.Bar(x=uc2_reasons_df['_dq_reason'], y=uc2_reasons_df['cnt'], marker_color=[color_map.get(d,'#3498db') for d in uc2_reasons_df['domain']])])
+            fig_uc2.update_layout(title='UC2 Rejection Reasons', xaxis_title='Reason', yaxis_title='Count', template='plotly_white', height=300, margin=dict(l=40,r=20,t=40,b=40))
+            uc2_reason_chart = dcc.Graph(figure=fig_uc2, config={'displayModeBar':False})
+
         return html.Div([
             dbc.Row([
                 dbc.Col(stat_card('Sensor DQ Records', f'{sensor_total:,}', 'primary', f'{sensor_flagged:,} flagged'), md=3, className='mb-3'),
@@ -342,7 +392,9 @@ try:
                 dbc.Col(stat_card('Pending Corrections', str(pending_corr), 'warning'), md=3, className='mb-3'),
             ]),
             dbc.Row([
-                dbc.Col(stat_card('Active Zones', str(active_zones), 'info'), md=3, className='mb-3'),
+                dbc.Col(stat_card('ERP Pass Rate', uc2_erp_pass, 'success', f'{uc2_erp_rejected} rejected'), md=3, className='mb-3'),
+                dbc.Col(stat_card('Contractor Pass Rate', uc2_con_pass, 'success', f'{uc2_con_rejected} rejected'), md=3, className='mb-3'),
+                dbc.Col(stat_card('Zones', str(active_zones), 'info'), md=3, className='mb-3'),
                 dbc.Col(stat_card('Active Rules', str(active_rules), 'info'), md=3, className='mb-3'),
             ]),
             html.Hr(),
@@ -352,7 +404,8 @@ try:
                 dbc.Col(dbc.Card(dbc.CardBody(sensor_reason_chart), className='card-stat'), md=6, className='mb-3'),
             ]),
             dbc.Row([
-                dbc.Col(dbc.Card(dbc.CardBody(sensor_zone_chart), className='card-stat'), md=12, className='mb-3'),
+                dbc.Col(dbc.Card(dbc.CardBody(sensor_zone_chart), className='card-stat'), md=6, className='mb-3'),
+                dbc.Col(dbc.Card(dbc.CardBody(uc2_reason_chart), className='card-stat'), md=6, className='mb-3'),
             ]),
         ])
       except Exception as ov_err:
@@ -360,79 +413,33 @@ try:
         import traceback; traceback.print_exc()
         return dbc.Alert(f'Error loading overview: {ov_err}', color='danger')
 
-    # --- Zone modal toggles ---
-    @callback(Output('modal-z','is_open'), Input('btn-z-add','n_clicks'), Input('btn-z-save','n_clicks'), State('modal-z','is_open'), prevent_initial_call=True)
-    def toggle_z_modal(n1,n2,o): return not o
-
-    @callback(Output('modal-z-deact','is_open'), Output('z-deact-id','options'),
-        Input('btn-z-deact','n_clicks'), Input('btn-z-deact-confirm','n_clicks'), State('modal-z-deact','is_open'), prevent_initial_call=True)
-    def toggle_z_deact(n1,n2,o):
-        if ctx.triggered_id == 'btn-z-deact':
-            df = run_q(f"SELECT zone_id, zone_name FROM {TBL_ZONE} WHERE is_active=true ORDER BY zone_id")
-            opts = [{'label': f"{r['zone_id']} - {r['zone_name']}", 'value': r['zone_id']} for _, r in df.iterrows()] if not df.empty else []
-            return True, opts
-        return False, dash.no_update
-
-    @callback(Output('modal-z-edit','is_open'), Output('z-edit-id','options'),
-        Input('btn-z-edit','n_clicks'), Input('btn-z-edit-confirm','n_clicks'), State('modal-z-edit','is_open'), prevent_initial_call=True)
-    def toggle_z_edit(n1,n2,o):
-        if ctx.triggered_id == 'btn-z-edit':
-            df = run_q(f"SELECT zone_id, zone_name FROM {TBL_ZONE} WHERE is_active=true ORDER BY zone_id")
-            opts = [{'label': f"{r['zone_id']} - {r['zone_name']}", 'value': r['zone_id']} for _, r in df.iterrows()] if not df.empty else []
-            return True, opts
-        return False, dash.no_update
-
-    # --- Zone CRUD ---
-    @callback(Output('z-out','children'), Output('z-status','children'),
-        Input('btn-z','n_clicks'), Input('btn-z-save','n_clicks'), Input('btn-z-deact-confirm','n_clicks'), Input('btn-z-edit-confirm','n_clicks'),
-        State('z-id','value'), State('z-name','value'),
-        State('z-deact-id','value'), State('z-deact-reason','value'),
-        State('z-edit-id','value'), State('z-edit-name','value'),
-        prevent_initial_call=False)
-    def cb_z(ref, save, deact, edit, zid, zname, deact_id, deact_reason, edit_id, edit_name):
-        status = ''
-        now = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')
-        if ctx.triggered_id == 'btn-z-save':
-            if not zid or not zname:
-                status = dbc.Alert('Zone ID and Zone Name are required.', color='warning', duration=4000)
-            elif not zid.strip().replace('_','').replace('-','').isalnum():
-                status = dbc.Alert('Zone ID must be alphanumeric (underscores/hyphens allowed).', color='warning', duration=4000)
-            else:
-                ok = run_s(f"INSERT INTO {TBL_ZONE} VALUES ('{zid.strip()}','{zname.strip()}','','',true,'app_user','{now}','{now}')")
-                if ok:
-                    run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{zid}','{TBL_ZONE}','{zid}','ADD','zone_name','','{zname}','New zone added','app_user','{now}')")
-                    status = dbc.Alert('Zone added!', color='success', duration=4000)
-                else:
-                    status = dbc.Alert('Failed to add zone. ID may already exist.', color='danger', duration=4000)
-        elif ctx.triggered_id == 'btn-z-edit-confirm':
-            if not edit_id or not edit_name:
-                status = dbc.Alert('Please select a zone and provide a new name.', color='warning', duration=4000)
-            else:
-                old_df = run_q(f"SELECT zone_name FROM {TBL_ZONE} WHERE zone_id='{edit_id}'")
-                old_name = old_df.iloc[0]['zone_name'] if not old_df.empty else ''
-                ok = run_s(f"UPDATE {TBL_ZONE} SET zone_name='{edit_name.strip()}', updated_at='{now}' WHERE zone_id='{edit_id}'")
-                if ok:
-                    run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{edit_id}','{TBL_ZONE}','{edit_id}','UPDATE','zone_name','{old_name} → {edit_name}','Zone name updated','Zone name updated','app_user','{now}')")
-                    status = dbc.Alert(f'Zone {edit_id} updated.', color='success', duration=4000)
-                else:
-                    status = dbc.Alert('Failed to update zone.', color='danger', duration=4000)
-        elif ctx.triggered_id == 'btn-z-deact-confirm':
-            if not deact_id or not deact_reason:
-                status = dbc.Alert('Please select a zone and provide a reason.', color='warning', duration=4000)
-            else:
-                ok = run_s(f"UPDATE {TBL_ZONE} SET is_active=false, updated_at='{now}' WHERE zone_id='{deact_id}'")
-                if ok:
-                    run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{deact_id}','{TBL_ZONE}','{deact_id}','DEACTIVATE','is_active','active → inactive','{deact_reason}','{deact_reason}','app_user','{now}')")
-                    status = dbc.Alert(f'Zone {deact_id} deactivated.', color='warning', duration=4000)
-                else:
-                    status = dbc.Alert('Failed to deactivate.', color='danger', duration=4000)
-        df = run_q(f'SELECT zone_id, zone_name, is_active, created_by, created_at, updated_at FROM {TBL_ZONE} ORDER BY zone_id LIMIT 50')
+    # --- Vendor Master (read-only) ---
+    @callback(Output('v-out','children'), Input('btn-v','n_clicks'), prevent_initial_call=False)
+    def cb_v(_):
+        df = run_q(f'SELECT vendor_id, vendor_name FROM {TBL_UC2_VENDOR} ORDER BY vendor_id')
         if df.empty:
-            return html.P('No zones yet. Click "+ Add Zone" to create one.'), status
-        tbl = wrap_table(dash_table.DataTable(data=df.to_dict('records'), columns=[{'name':c,'id':c} for c in df.columns], page_size=15,
-            style_table=TABLE_STYLE, style_cell=CELL_STYLE, style_header=HEADER_STYLE,
-            style_data_conditional=[{'if':{'filter_query':'{is_active} eq false'},'backgroundColor':'#f8d7da'}]))
-        return tbl, status
+            return html.P('No vendor data available. Run the UC2 pipeline to populate.')
+        return html.Div([
+            html.P(f'{len(df)} vendors loaded from pipeline.', className='text-muted mb-2'),
+            wrap_table(dash_table.DataTable(
+                data=df.to_dict('records'), columns=[{'name':c,'id':c} for c in df.columns],
+                page_size=20, filter_action='native', sort_action='native',
+                style_table=TABLE_STYLE, style_cell=CELL_STYLE, style_header=HEADER_STYLE)),
+        ])
+
+    # --- Zone (read-only from materialized view) ---
+    @callback(Output('z-out','children'), Input('btn-z','n_clicks'), prevent_initial_call=False)
+    def cb_z(_):
+        df = run_q(f'SELECT zone_name FROM {TBL_ZONE} ORDER BY zone_name')
+        if df.empty:
+            return html.P('No zones found. Zones are auto-derived from pipeline data.')
+        return html.Div([
+            html.P(f'{len(df)} zones derived from Silver layer tables.', className='text-muted mb-2'),
+            wrap_table(dash_table.DataTable(
+                data=df.to_dict('records'), columns=[{'name':c,'id':c} for c in df.columns],
+                page_size=20, filter_action='native', sort_action='native',
+                style_table=TABLE_STYLE, style_cell=CELL_STYLE, style_header=HEADER_STYLE)),
+        ])
 
     # --- Rules modal toggles ---
     @callback(Output('modal-r','is_open'), Input('btn-r-add','n_clicks'), Input('btn-r-save','n_clicks'), State('modal-r','is_open'), prevent_initial_call=True)
@@ -468,40 +475,59 @@ try:
         status = ''
         now = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')
         if ctx.triggered_id == 'btn-r-save':
-            if not rid or not rname:
-                status = dbc.Alert('Rule ID and Rule Name are required.', color='warning', duration=4000)
-            elif not rid.strip().replace('_','').replace('-','').isalnum():
-                status = dbc.Alert('Rule ID must be alphanumeric (underscores/hyphens allowed).', color='warning', duration=4000)
-            elif not rcat:
-                status = dbc.Alert('Please select a category.', color='warning', duration=4000)
+            ok_id, clean_id = _valid_id(rid, max_len=30)
+            if not ok_id:
+                status = dbc.Alert(f'Rule ID: {clean_id}', color='warning', duration=4000)
             else:
-                ok = run_s(f"INSERT INTO {TBL_RULES} VALUES ('{rid.strip()}','{rname.strip()}','{rcat}','{rparam or ''}','{rval or ''}','string','{rdesc or ''}',true,'app_user','{now}')")
-                if ok:
-                    run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{rid}','{TBL_RULES}','{rid}','ADD','rule_name','','{rname}','New rule added','app_user','{now}')")
-                    status = dbc.Alert('Rule saved!', color='success', duration=4000)
+                ok_name, clean_name = _valid_text(rname, 'Rule Name', required=True, max_len=100)
+                if not ok_name:
+                    status = dbc.Alert(clean_name, color='warning', duration=4000)
+                elif not rcat:
+                    status = dbc.Alert('Please select a category.', color='warning', duration=4000)
                 else:
-                    status = dbc.Alert('Failed to save rule. ID may already exist.', color='danger', duration=4000)
+                    _, clean_param = _valid_text(rparam, 'Parameter', required=False, max_len=100)
+                    _, clean_val = _valid_text(rval, 'Value', required=False, max_len=255)
+                    _, clean_desc = _valid_text(rdesc, 'Description', required=False, max_len=500)
+                    dup_df = run_q(f"SELECT 1 FROM {TBL_RULES} WHERE rule_id='{_esc(clean_id)}' LIMIT 1")
+                    if not dup_df.empty:
+                        status = dbc.Alert(f'Rule ID {clean_id} already exists.', color='danger', duration=4000)
+                    else:
+                        ok = run_s(f"INSERT INTO {TBL_RULES} VALUES ('{_esc(clean_id)}','{_esc(clean_name)}','{_esc(rcat)}','{_esc(clean_param)}','{_esc(clean_val)}','string','{_esc(clean_desc)}',true,'app_user','{now}')")
+                        if ok:
+                            run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{_esc(now + '_' + clean_id)}','{TBL_RULES}','{_esc(clean_id)}','ADD','rule_name','','{_esc(clean_name)}','New rule added','app_user','{now}')")
+                            status = dbc.Alert('Rule saved!', color='success', duration=4000)
+                        else:
+                            status = dbc.Alert('Failed to save rule.', color='danger', duration=4000)
         elif ctx.triggered_id == 'btn-r-edit-confirm':
-            if not edit_id or not edit_val:
-                status = dbc.Alert('Please select a rule and provide a new value.', color='warning', duration=4000)
-            elif not edit_reason:
-                status = dbc.Alert('Reason for change is required.', color='warning', duration=4000)
+            ok_val, clean_val = _valid_text(edit_val, 'Parameter value', required=True, max_len=255)
+            ok_reason, clean_reason = _valid_text(edit_reason, 'Reason', required=True, max_len=255)
+            if not edit_id:
+                status = dbc.Alert('Please select a rule.', color='warning', duration=4000)
+            elif not ok_val:
+                status = dbc.Alert(clean_val, color='warning', duration=4000)
+            elif not ok_reason:
+                status = dbc.Alert(clean_reason, color='warning', duration=4000)
             else:
-                old_df = run_q(f"SELECT parameter_value FROM {TBL_RULES} WHERE rule_id='{edit_id}'")
-                old_val = old_df.iloc[0]['parameter_value'] if not old_df.empty else ''
-                ok = run_s(f"UPDATE {TBL_RULES} SET parameter_value='{edit_val}', updated_at='{now}', updated_by='app_user' WHERE rule_id='{edit_id}'")
+                safe_id = _esc(edit_id)
+                old_df = run_q(f"SELECT parameter_value FROM {TBL_RULES} WHERE rule_id='{safe_id}'")
+                old_val = _esc(old_df.iloc[0]['parameter_value']) if not old_df.empty else ''
+                ok = run_s(f"UPDATE {TBL_RULES} SET parameter_value='{_esc(clean_val)}', updated_at='{now}', updated_by='app_user' WHERE rule_id='{safe_id}'")
                 if ok:
-                    run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{edit_id}','{TBL_RULES}','{edit_id}','UPDATE','parameter_value','{old_val} → {edit_val}','{edit_reason}','{edit_reason}','app_user','{now}')")
+                    run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{_esc(now + '_' + edit_id)}','{TBL_RULES}','{safe_id}','UPDATE','parameter_value','{old_val} → {_esc(clean_val)}','{_esc(clean_reason)}','{_esc(clean_reason)}','app_user','{now}')")
                     status = dbc.Alert(f'Rule {edit_id} updated.', color='success', duration=4000)
                 else:
                     status = dbc.Alert('Failed to update.', color='danger', duration=4000)
         elif ctx.triggered_id == 'btn-r-deact-confirm':
-            if not deact_id or not deact_reason:
-                status = dbc.Alert('Please select a rule and provide a reason.', color='warning', duration=4000)
+            ok_reason, clean_reason = _valid_text(deact_reason, 'Reason', required=True, max_len=255)
+            if not deact_id:
+                status = dbc.Alert('Please select a rule.', color='warning', duration=4000)
+            elif not ok_reason:
+                status = dbc.Alert(clean_reason, color='warning', duration=4000)
             else:
-                ok = run_s(f"UPDATE {TBL_RULES} SET is_active=false, updated_at='{now}', updated_by='app_user' WHERE rule_id='{deact_id}'")
+                safe_id = _esc(deact_id)
+                ok = run_s(f"UPDATE {TBL_RULES} SET is_active=false, updated_at='{now}', updated_by='app_user' WHERE rule_id='{safe_id}'")
                 if ok:
-                    run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{deact_id}','{TBL_RULES}','{deact_id}','DEACTIVATE','is_active','active → inactive','{deact_reason}','{deact_reason}','app_user','{now}')")
+                    run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{_esc(now + '_' + deact_id)}','{TBL_RULES}','{safe_id}','DEACTIVATE','is_active','active → inactive','{_esc(clean_reason)}','{_esc(clean_reason)}','app_user','{now}')")
                     status = dbc.Alert(f'Rule {deact_id} deactivated.', color='warning', duration=4000)
                 else:
                     status = dbc.Alert('Failed to deactivate rule.', color='danger', duration=4000)
@@ -521,8 +547,14 @@ try:
         elif tab == 'sensor':
             df = run_q(f'SELECT sensor_id, location_id, zone, reading_type, reading_value, unit, timestamp, dq_reason, dq_status FROM {TBL_SENSOR_DQ} LIMIT 50')
             if df.empty: return html.P('No sensor DQ records.')
+        elif tab == 'uc2_erp':
+            df = run_q(f'SELECT cost_center, vendor_id, vendor_name, site_zone, invoice_date, project_code, _dq_reason, _source_file, _ingest_ts, _rejected_at FROM {TBL_UC2_REJECT_INVOICE} ORDER BY _rejected_at DESC LIMIT 50')
+            if df.empty: return html.P('No rejected ERP invoices.')
+        elif tab == 'uc2_contractor':
+            df = run_q(f'SELECT zone, description, contractor_id, _dq_reason, _source_file, _ingest_ts, _rejected_at FROM {TBL_UC2_REJECT_CONTRACTOR} ORDER BY _rejected_at DESC LIMIT 50')
+            if df.empty: return html.P('No rejected contractor work orders.')
         else:
-            df = run_q(f'SELECT account_id, meter_id, billing_period, original_consumption_value, original_consumption_unit, amount_billed, payment_status, quality_flag, rejection_reason FROM {TBL_QUARANTINE} LIMIT 50')
+            df = run_q(f'SELECT account_id, meter_id, billing_period, original_consumption_value, original_consumption_unit, amount_billed, payment_status, dq_status, dq_reason FROM {TBL_QUARANTINE} LIMIT 50')
             if df.empty: return html.P('No quarantine records.')
         cond = [{'if':{'filter_query':'{status} eq "PENDING"'},'backgroundColor':'#fff3cd'}] if tab=='corrections' else []
         return wrap_table(dash_table.DataTable(data=df.to_dict('records'),columns=[{'name':c,'id':c} for c in df.columns],page_size=15,
@@ -532,7 +564,7 @@ try:
             tooltip_duration=None))
 
     # --- Populate Record ID & Field dropdowns based on source table ---
-    _SRC_ID_COL = {TBL_SENSOR_DQ: 'sensor_id', TBL_QUARANTINE: 'account_id'}
+    _SRC_ID_COL = {TBL_SENSOR_DQ: 'sensor_id', TBL_QUARANTINE: 'account_id', TBL_UC2_REJECT_INVOICE: 'vendor_id', TBL_UC2_REJECT_CONTRACTOR: 'contractor_id'}
 
     @callback(
         Output('corr-rec-id','options'), Output('corr-field','options'),
@@ -560,15 +592,21 @@ try:
     def cb_corr(_, source, rec_id, field, new_val, reason, cur_refresh):
         if not all([source, rec_id, field, new_val, reason]):
             return dbc.Alert('All fields are required.', color='warning', duration=4000), dash.no_update
+        ok_val, clean_val = _valid_text(new_val, 'Corrected value', required=True, max_len=500)
+        if not ok_val:
+            return dbc.Alert(clean_val, color='warning', duration=4000), dash.no_update
+        ok_reason, clean_reason = _valid_text(reason, 'Reason', required=True, max_len=500)
+        if not ok_reason:
+            return dbc.Alert(clean_reason, color='warning', duration=4000), dash.no_update
         now = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')
         corr_id = f'CORR_{now}_{rec_id}'.replace(':','-')
         # Fetch the original value from the source table
         id_col = _SRC_ID_COL.get(source, 'record_id')
-        orig_df = run_q(f"SELECT {field} FROM {source} WHERE {id_col}='{rec_id}' LIMIT 1")
+        orig_df = run_q(f"SELECT {_esc(field)} FROM {source} WHERE {id_col}='{_esc(rec_id)}' LIMIT 1")
         original_val = str(orig_df.iloc[0][field]) if not orig_df.empty else ''
-        ok = run_s(f"INSERT INTO {TBL_CORRECTIONS} VALUES ('{corr_id}','{source}','{rec_id}','{field}','{original_val}','{new_val}','{reason}','PENDING','app_user','{now}',NULL,NULL)")
+        ok = run_s(f"INSERT INTO {TBL_CORRECTIONS} VALUES ('{_esc(corr_id)}','{_esc(source)}','{_esc(rec_id)}','{_esc(field)}','{_esc(original_val)}','{_esc(clean_val)}','{_esc(clean_reason)}','PENDING','app_user','{now}',NULL,NULL)")
         if ok:
-            run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{now}_{corr_id}','{TBL_CORRECTIONS}','{corr_id}','CORRECTION_SUBMITTED','{field}','{original_val} → {new_val}','{reason}','{reason}','app_user','{now}')")
+            run_s(f"INSERT INTO {TBL_AUDIT} VALUES ('{_esc(now + '_' + corr_id)}','{TBL_CORRECTIONS}','{_esc(corr_id)}','CORRECTION_SUBMITTED','{_esc(field)}','{_esc(original_val)} → {_esc(clean_val)}','{_esc(clean_reason)}','{_esc(clean_reason)}','app_user','{now}')")
             return dbc.Alert(f'Correction {corr_id} submitted (status: PENDING).', color='success', duration=5000), (cur_refresh or 0) + 1
         return dbc.Alert('Failed to submit correction.', color='danger', duration=4000), dash.no_update
 
